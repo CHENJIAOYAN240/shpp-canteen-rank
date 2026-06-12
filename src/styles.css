@@ -781,6 +781,53 @@ footer p {
   object-fit: cover;
 }
 
+.photo-status {
+  position: absolute;
+  z-index: 3;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  min-height: 28px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: rgb(25 22 19 / 82%);
+  color: white;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  backdrop-filter: blur(5px);
+}
+
+.photo-status:empty {
+  display: none;
+}
+
+.photo-status[data-status='working']::before {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border: 2px solid rgb(255 255 255 / 40%);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: photo-status-spin 0.7s linear infinite;
+  content: '';
+}
+
+.photo-status[data-status='ready'] {
+  background: rgb(38 105 67 / 88%);
+}
+
+.photo-status[data-status='error'] {
+  background: rgb(164 45 38 / 90%);
+}
+
+@keyframes photo-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .form-grid {
   display: grid;
   gap: 16px;

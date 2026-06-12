@@ -16,7 +16,11 @@ import {
 } from './backend.js'
 import { compressImage } from './image.js'
 import { escapeHtml, formatPrice, formatRelativeTime } from './utils.js'
-import { validateCommentInput, validateReviewInput } from './validation.js'
+import {
+  validateCommentInput,
+  validateImageFile,
+  validateReviewInput,
+} from './validation.js'
 
 const backend = createBackend()
 const app = document.querySelector('#app')
@@ -27,6 +31,10 @@ const state = {
   activeReview: null,
   loading: true,
   nickname: localStorage.getItem('canteen-nickname') ?? '',
+  preparedImage: null,
+  imagePreparation: null,
+  imagePreparationError: null,
+  imagePreparationId: 0,
 }
 
 renderShell()
@@ -165,6 +173,7 @@ function renderShell() {
             <small>JPG / PNG / WebP，最大5MB</small>
           </label>
           <img id="photoPreview" alt="待上传食物预览" hidden>
+          <span class="photo-status" id="photoStatus" aria-live="polite"></span>
         </div>
         <p class="field-error" data-error-for="image"></p>
 
@@ -545,11 +554,19 @@ async function submitReview(event) {
   }
 
   const submitButton = form.querySelector('[type="submit"]')
-  setButtonLoading(submitButton, true, '正在压缩并上传…')
+  setButtonLoading(submitButton, true, '正在准备照片…')
 
   try {
-    const imageBlob = await compressImage(input.image)
-    await withCaptchaRetry(() => backend.submitReview(input, imageBlob))
+    const imageBlob = await getPreparedImage(input.image)
+    await withCaptchaRetry(
+      () =>
+        backend.submitReview(input, imageBlob, (message) => {
+          submitButton.textContent = message
+        }),
+      () => {
+        submitButton.textContent = '请先完成人机验证'
+      },
+    )
     state.nickname = input.nickname.trim()
     localStorage.setItem('canteen-nickname', state.nickname)
     form.reset()
@@ -602,22 +619,85 @@ async function submitComment(event) {
   }
 }
 
-function showPhotoPreview(event) {
+async function showPhotoPreview(event) {
   const [file] = event.target.files
   if (!file) return resetPhotoPreview()
+
+  const form = event.target.form
+  const imageError = validateImageFile(file)
+  const errorNode = form.querySelector('[data-error-for="image"]')
+  errorNode.textContent = imageError
+  if (imageError) {
+    resetPhotoPreview()
+    return
+  }
+
+  const preparationId = ++state.imagePreparationId
+  state.preparedImage = null
+  state.imagePreparationError = null
   const preview = document.querySelector('#photoPreview')
+  if (preview.src) URL.revokeObjectURL(preview.src)
   preview.src = URL.createObjectURL(file)
   preview.hidden = false
   document.querySelector('#photoLabel').classList.add('has-photo')
+  setPhotoStatus('正在优化照片…', 'working')
+
+  state.imagePreparation = compressImage(file)
+    .then((blob) => {
+      if (preparationId !== state.imagePreparationId) return blob
+      state.preparedImage = { file, blob }
+      setPhotoStatus(
+        `照片已优化：${formatFileSize(file.size)} → ${formatFileSize(blob.size)}`,
+        'ready',
+      )
+      return blob
+    })
+    .catch((error) => {
+      if (preparationId === state.imagePreparationId) {
+        state.imagePreparationError = error
+        setPhotoStatus('照片处理失败，请重新选择', 'error')
+        errorNode.textContent = humanizeError(error)
+      }
+      return null
+    })
+}
+
+async function getPreparedImage(file) {
+  if (state.preparedImage?.file === file) return state.preparedImage.blob
+  if (state.imagePreparation) {
+    const blob = await state.imagePreparation
+    if (blob) return blob
+    throw state.imagePreparationError ?? new Error('照片处理失败，请重新选择')
+  }
+
+  state.imagePreparation = compressImage(file)
+  return state.imagePreparation
 }
 
 function resetPhotoPreview() {
+  state.imagePreparationId += 1
+  state.preparedImage = null
+  state.imagePreparation = null
+  state.imagePreparationError = null
   const preview = document.querySelector('#photoPreview')
   if (preview.src) URL.revokeObjectURL(preview.src)
   preview.src = ''
   preview.hidden = true
   document.querySelector('#photoLabel').classList.remove('has-photo')
+  setPhotoStatus('')
+  document.querySelector('#foodPhoto').value = ''
   document.querySelector('#reviewCounter').textContent = `0/${MAX_REVIEW_LENGTH}`
+}
+
+function setPhotoStatus(message, status = '') {
+  const node = document.querySelector('#photoStatus')
+  node.textContent = message
+  node.dataset.status = status
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
 }
 
 function updateReviewCounter(event) {
@@ -649,9 +729,10 @@ function setButtonLoading(button, loading, label) {
   button.textContent = label
 }
 
-function withCaptchaRetry(operation) {
+function withCaptchaRetry(operation, onCaptcha = () => {}) {
   return operation().catch(async (error) => {
     if (!(error instanceof CaptchaRequiredError)) throw error
+    onCaptcha()
     await showCaptchaGate()
     return operation()
   })

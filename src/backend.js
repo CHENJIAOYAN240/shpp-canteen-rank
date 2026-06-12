@@ -4,6 +4,7 @@ import { generateId } from './utils.js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const REQUEST_TIMEOUT_MS = 30_000
 
 export const turnstileSiteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY ?? ''
 export const hasSupabaseConfig = Boolean(
@@ -28,6 +29,9 @@ export function createBackend() {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: false,
+    },
+    global: {
+      fetch: fetchWithTimeout,
     },
   })
 
@@ -131,11 +135,13 @@ export function createBackend() {
     return data ?? []
   }
 
-  async function submitReview(input, imageBlob) {
+  async function submitReview(input, imageBlob, onProgress = () => {}) {
+    onProgress('正在连接账号…')
     const user = await ensureSession()
     const reviewId = generateId()
     const imagePath = `${user.id}/${reviewId}.webp`
 
+    onProgress('正在上传照片…')
     const { error: uploadError } = await supabase.storage
       .from('food-photos')
       .upload(imagePath, imageBlob, {
@@ -145,6 +151,7 @@ export function createBackend() {
       })
     if (uploadError) throw uploadError
 
+    onProgress('正在保存饭评…')
     const { error: insertError } = await supabase.from('reviews').insert({
       id: reviewId,
       author_id: user.id,
@@ -241,8 +248,10 @@ function createDemoBackend() {
       await shortDelay()
       return structuredClone(comments[reviewId] ?? [])
     },
-    async submitReview() {
+    async submitReview(input, imageBlob, onProgress = () => {}) {
+      onProgress('正在上传照片…')
       await shortDelay()
+      onProgress('正在保存饭评…')
       return { id: generateId(), status: 'pending' }
     },
     async submitComment() {
@@ -261,4 +270,26 @@ function createDemoBackend() {
 
 function shortDelay() {
   return new Promise((resolve) => setTimeout(resolve, 180))
+}
+
+async function fetchWithTimeout(input, init = {}) {
+  const controller = new AbortController()
+  const externalSignal = init.signal
+  const abortFromExternalSignal = () => controller.abort(externalSignal.reason)
+  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  if (externalSignal?.aborted) abortFromExternalSignal()
+  else externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true })
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (controller.signal.aborted && !externalSignal?.aborted) {
+      throw new Error('网络请求超时，请检查网络后重试')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+    externalSignal?.removeEventListener('abort', abortFromExternalSignal)
+  }
 }
