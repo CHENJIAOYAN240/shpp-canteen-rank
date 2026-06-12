@@ -24,6 +24,8 @@ import {
 
 const backend = createBackend()
 const app = document.querySelector('#app')
+const TURNSTILE_SCRIPT_URL =
+  'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
 
 const state = {
   filters: { floor: 'all', rating: 'all', sort: 'latest' },
@@ -740,6 +742,9 @@ function withCaptchaRetry(operation, onCaptcha = () => {}) {
 
 function showCaptchaGate() {
   const gate = document.querySelector('#authGate')
+  const interruptedDialog = document.querySelector('dialog[open]')
+  interruptedDialog?.close()
+
   gate.innerHTML = `
     <div class="auth-gate">
       <div class="auth-card">
@@ -747,43 +752,83 @@ function showCaptchaGate() {
         <p class="section-kicker">ONE QUICK CHECK</p>
         <h2>先确认你不是自动刷榜程序</h2>
         <p>只需完成一次验证，之后会自动记住这台设备。</p>
-        <div id="turnstileWidget"></div>
+        <div id="turnstileWidget">
+          <span class="auth-loading">验证组件加载中…</span>
+        </div>
         <p class="field-error" id="authError"></p>
+        <button class="auth-back" type="button" id="authBack">返回填写</button>
       </div>
     </div>
   `
 
   return new Promise((resolve, reject) => {
-    let attempts = 0
-    const renderWidget = () => {
-      if (!window.turnstile) {
-        attempts += 1
-        if (attempts > 30) {
-          const error = new Error('验证组件加载失败，请刷新页面重试')
-          document.querySelector('#authError').textContent = error.message
-          reject(error)
-          return
-        }
-        window.setTimeout(renderWidget, 200)
-        return
-      }
-
-      window.turnstile.render('#turnstileWidget', {
-        sitekey: turnstileSiteKey,
-        theme: 'light',
-        callback: async (token) => {
-          try {
-            await backend.ensureSession(token)
-            gate.innerHTML = ''
-            resolve()
-          } catch (error) {
-            document.querySelector('#authError').textContent = humanizeError(error)
-            window.turnstile.reset()
-          }
-        },
-      })
+    const restoreDialog = () => {
+      gate.innerHTML = ''
+      if (interruptedDialog && !interruptedDialog.open) interruptedDialog.showModal()
     }
-    renderWidget()
+
+    document.querySelector('#authBack').addEventListener('click', () => {
+      restoreDialog()
+      reject(new Error('已取消人机验证'))
+    })
+
+    loadTurnstile()
+      .then(() => {
+        const widget = document.querySelector('#turnstileWidget')
+        widget.innerHTML = ''
+
+        window.turnstile.render(widget, {
+          sitekey: turnstileSiteKey,
+          theme: 'light',
+          callback: async (token) => {
+            try {
+              await backend.ensureSession(token)
+              restoreDialog()
+              resolve()
+            } catch (error) {
+              document.querySelector('#authError').textContent = humanizeError(error)
+              window.turnstile.reset()
+            }
+          },
+          'error-callback': () => {
+            document.querySelector('#authError').textContent =
+              '验证加载失败，请切换网络后点击刷新重试'
+          },
+        })
+      })
+      .catch((error) => {
+        document.querySelector('#turnstileWidget').innerHTML = ''
+        document.querySelector('#authError').textContent = error.message
+      })
+  })
+}
+
+function loadTurnstile() {
+  if (window.turnstile) return Promise.resolve(window.turnstile)
+
+  return new Promise((resolve, reject) => {
+    document.querySelector('#turnstileScript')?.remove()
+
+    const script = document.createElement('script')
+    const timeoutId = window.setTimeout(() => {
+      script.remove()
+      reject(new Error('验证组件加载超时，请切换网络后刷新重试'))
+    }, 12_000)
+
+    script.id = 'turnstileScript'
+    script.src = TURNSTILE_SCRIPT_URL
+    script.async = true
+    script.defer = true
+    script.onload = () => {
+      window.clearTimeout(timeoutId)
+      if (window.turnstile) resolve(window.turnstile)
+      else reject(new Error('验证组件没有正确启动，请刷新重试'))
+    }
+    script.onerror = () => {
+      window.clearTimeout(timeoutId)
+      reject(new Error('验证组件加载失败，请切换网络后刷新重试'))
+    }
+    document.head.append(script)
   })
 }
 
