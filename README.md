@@ -33,21 +33,11 @@ npm run dev
 ```env
 VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_PUBLISHABLE_ANON_KEY
-VITE_TURNSTILE_SITE_KEY=YOUR_CLOUDFLARE_TURNSTILE_SITE_KEY
 ```
 
-如果暂时不配置 Turnstile，开发环境仍可运行；公开上线前建议完成下一节。
-
-## 配置防刷验证
-
-1. 在 [Cloudflare Turnstile](https://dash.cloudflare.com/?to=/:account/turnstile) 新建站点。
-2. 生产组件添加你的 `github.io` 域名；本地开发使用 Cloudflare 官方测试密钥。
-3. 将 Site Key 写入 `VITE_TURNSTILE_SITE_KEY`。
-4. 在 Supabase 打开：
-   `Authentication > Bot and Abuse Protection > Enable CAPTCHA protection`
-5. 选择 Cloudflare Turnstile，并填写 Secret Key。
-
-Secret Key 只填写在 Supabase 控制台，不能写进前端项目。
+为减少微信和QQ内置浏览器中的投稿阻塞，当前版本不启用前台 CAPTCHA。
+Supabase 仍会为首次互动的设备创建匿名身份，数据库同时执行投稿和评论限频，
+所有内容审核通过后才会公开。如果网站后续出现明显批量刷量，再重新启用 CAPTCHA。
 
 ## 审核内容
 
@@ -70,7 +60,6 @@ Secret Key 只填写在 Supabase 控制台，不能写进前端项目。
 2. 在仓库 `Settings > Secrets and variables > Actions` 添加：
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
-   - `VITE_TURNSTILE_SITE_KEY`
 3. 在 `Settings > Pages > Source` 选择 `GitHub Actions`。
 4. 推送后，`.github/workflows/deploy.yml` 会自动测试、构建和发布。
 

@@ -6,20 +6,12 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 const REQUEST_TIMEOUT_MS = 30_000
 
-export const turnstileSiteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY ?? ''
 export const hasSupabaseConfig = Boolean(
   supabaseUrl &&
     supabaseAnonKey &&
     !supabaseUrl.includes('YOUR_PROJECT') &&
     !supabaseAnonKey.includes('YOUR_'),
 )
-
-export class CaptchaRequiredError extends Error {
-  constructor() {
-    super('需要完成人机验证')
-    this.name = 'CaptchaRequiredError'
-  }
-}
 
 export function createBackend() {
   if (!hasSupabaseConfig) return createDemoBackend()
@@ -37,7 +29,7 @@ export function createBackend() {
 
   let userId = null
 
-  async function ensureSession(captchaToken) {
+  async function ensureSession() {
     const {
       data: { session },
     } = await supabase.auth.getSession()
@@ -47,11 +39,7 @@ export function createBackend() {
       return session.user
     }
 
-    if (turnstileSiteKey && !captchaToken) throw new CaptchaRequiredError()
-
-    const { data, error } = await supabase.auth.signInAnonymously({
-      options: captchaToken ? { captchaToken } : undefined,
-    })
+    const { data, error } = await supabase.auth.signInAnonymously()
     if (error) throw error
     userId = data.user.id
     return data.user
