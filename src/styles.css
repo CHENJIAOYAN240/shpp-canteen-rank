@@ -952,6 +952,73 @@ footer p {
   margin-top: 3px;
 }
 
+.auth-precheck {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #d3c7b5;
+  border-radius: 12px;
+  background: #fffaf0;
+}
+
+.auth-precheck[hidden] {
+  display: none;
+}
+
+.auth-precheck[data-status="success"] {
+  border-color: #7eaa72;
+  background: #f2faed;
+}
+
+.auth-precheck[data-status="error"] {
+  border-color: #d9826e;
+}
+
+.auth-precheck-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.auth-precheck-copy b {
+  font-size: 13px;
+}
+
+.auth-precheck-copy span,
+.auth-browser-tip {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+#inlineTurnstileWidget:empty {
+  display: none;
+}
+
+#inlineTurnstileWidget,
+#turnstileWidget {
+  width: 100%;
+}
+
+.auth-browser-tip {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #8d3d29;
+  background: #fff0e8;
+  font-weight: 700;
+}
+
+.auth-retry {
+  justify-self: center;
+  padding: 8px 14px;
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  background: var(--yellow);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .primary-button {
   padding: 13px;
 }
@@ -1239,7 +1306,6 @@ footer p {
 }
 
 .auth-back {
-  margin-top: 10px;
   padding: 8px 14px;
   border: 1px solid var(--ink);
   border-radius: 999px;
@@ -1247,6 +1313,13 @@ footer p {
   cursor: pointer;
   font-size: 12px;
   font-weight: 800;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 10px;
 }
 
 @keyframes slide-in {

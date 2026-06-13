@@ -26,6 +26,8 @@ const backend = createBackend()
 const app = document.querySelector('#app')
 const TURNSTILE_SCRIPT_URL =
   'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+const TURNSTILE_TIMEOUT_MS = 8_000
+let turnstileLoadPromise = null
 
 const state = {
   filters: { floor: 'all', rating: 'all', sort: 'latest' },
@@ -37,6 +39,8 @@ const state = {
   imagePreparation: null,
   imagePreparationError: null,
   imagePreparationId: 0,
+  authPreparation: null,
+  authWidgetId: null,
 }
 
 renderShell()
@@ -44,6 +48,12 @@ bindEvents()
 bootstrap()
 
 async function bootstrap() {
+  if (turnstileSiteKey) {
+    loadTurnstile().catch(() => {
+      // The inline verifier will show a retry action if warm-up fails.
+    })
+  }
+
   try {
     await loadReviews()
     openReviewFromHash()
@@ -167,6 +177,19 @@ function renderShell() {
           <button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button>
         </div>
 
+        <section class="auth-precheck" id="authPrecheck" hidden aria-live="polite">
+          <div class="auth-precheck-copy">
+            <b id="authPrecheckTitle">正在提前完成人机验证</b>
+            <span id="authPrecheckStatus">你可以继续填写，提交时不用再等待。</span>
+          </div>
+          <div id="inlineTurnstileWidget"></div>
+          <p class="auth-browser-tip" id="inlineBrowserTip" hidden>
+            当前是微信或QQ内置浏览器。若验证较慢，请点右上角“…”选择“在浏览器打开”。
+          </p>
+          <p class="field-error" id="inlineAuthError"></p>
+          <button class="auth-retry" type="button" id="inlineAuthRetry" hidden>重新验证</button>
+        </section>
+
         <div class="photo-field">
           <input id="foodPhoto" name="image" type="file" accept="image/jpeg,image/png,image/webp" required>
           <label for="foodPhoto" id="photoLabel">
@@ -261,6 +284,9 @@ function bindEvents() {
     const openSubmit = event.target.closest('[data-open-submit]')
     if (openSubmit) {
       document.querySelector('#submitDialog').showModal()
+      prepareAuthSession().catch(() => {
+        // The inline panel contains the actionable error and retry button.
+      })
       return
     }
 
@@ -560,6 +586,10 @@ async function submitReview(event) {
 
   try {
     const imageBlob = await getPreparedImage(input.image)
+    if (state.authPreparation) {
+      submitButton.textContent = '正在完成人机验证…'
+      await state.authPreparation
+    }
     await withCaptchaRetry(
       () =>
         backend.submitReview(input, imageBlob, (message) => {
@@ -740,6 +770,70 @@ function withCaptchaRetry(operation, onCaptcha = () => {}) {
   })
 }
 
+function prepareAuthSession({ force = false } = {}) {
+  if (backend.isDemo || !turnstileSiteKey) return Promise.resolve()
+  if (state.authPreparation && !force) return state.authPreparation
+
+  if (force && state.authWidgetId !== null && window.turnstile) {
+    window.turnstile.remove(state.authWidgetId)
+    state.authWidgetId = null
+  }
+
+  const panel = document.querySelector('#authPrecheck')
+  const widget = document.querySelector('#inlineTurnstileWidget')
+  const title = document.querySelector('#authPrecheckTitle')
+  const status = document.querySelector('#authPrecheckStatus')
+  const errorNode = document.querySelector('#inlineAuthError')
+  const retryButton = document.querySelector('#inlineAuthRetry')
+  const browserTip = document.querySelector('#inlineBrowserTip')
+
+  panel.hidden = false
+  delete panel.dataset.status
+  title.textContent = '正在提前完成人机验证'
+  status.textContent = '你可以继续填写，提交时不用再等待。'
+  errorNode.textContent = ''
+  retryButton.hidden = true
+  browserTip.hidden = !isEmbeddedBrowser()
+  widget.innerHTML = '<span class="auth-loading">验证组件准备中…</span>'
+
+  retryButton.onclick = () => {
+    prepareAuthSession({ force: true }).catch(() => {
+      // The panel remains visible with the latest error.
+    })
+  }
+
+  state.authPreparation = backend
+    .ensureSession()
+    .catch((error) => {
+      if (!(error instanceof CaptchaRequiredError)) throw error
+      return runTurnstileChallenge(widget, (widgetId) => {
+        state.authWidgetId = widgetId
+      })
+    })
+    .then(() => {
+      if (state.authWidgetId !== null && window.turnstile) {
+        window.turnstile.remove(state.authWidgetId)
+        state.authWidgetId = null
+      }
+      title.textContent = '设备验证完成'
+      status.textContent = '提交时会直接上传，不需要再次验证。'
+      panel.dataset.status = 'success'
+      widget.innerHTML = ''
+      retryButton.hidden = true
+    })
+    .catch((error) => {
+      panel.dataset.status = 'error'
+      title.textContent = '验证没有完成'
+      status.textContent = '请重新验证；内置浏览器卡住时请改用系统浏览器。'
+      errorNode.textContent = humanizeError(error)
+      retryButton.hidden = false
+      state.authPreparation = null
+      throw error
+    })
+
+  return state.authPreparation
+}
+
 function showCaptchaGate() {
   const gate = document.querySelector('#authGate')
   const interruptedDialog = document.querySelector('dialog[open]')
@@ -755,65 +849,137 @@ function showCaptchaGate() {
         <div id="turnstileWidget">
           <span class="auth-loading">验证组件加载中…</span>
         </div>
+        <p class="auth-browser-tip" id="authBrowserTip" hidden>
+          微信或QQ内置浏览器容易卡住。请点右上角“…”选择“在浏览器打开”后再投稿。
+        </p>
         <p class="field-error" id="authError"></p>
-        <button class="auth-back" type="button" id="authBack">返回填写</button>
+        <div class="auth-actions">
+          <button class="auth-retry" type="button" id="authRetry" hidden>重新验证</button>
+          <button class="auth-back" type="button" id="authBack">返回填写</button>
+        </div>
       </div>
     </div>
   `
 
   return new Promise((resolve, reject) => {
+    let widgetId = null
+    let settled = false
+
     const restoreDialog = () => {
+      if (widgetId !== null && window.turnstile) window.turnstile.remove(widgetId)
       gate.innerHTML = ''
       if (interruptedDialog && !interruptedDialog.open) interruptedDialog.showModal()
     }
 
     document.querySelector('#authBack').addEventListener('click', () => {
+      settled = true
       restoreDialog()
       reject(new Error('已取消人机验证'))
     })
 
-    loadTurnstile()
-      .then(() => {
-        const widget = document.querySelector('#turnstileWidget')
-        widget.innerHTML = ''
+    const browserTip = document.querySelector('#authBrowserTip')
+    browserTip.hidden = !isEmbeddedBrowser()
 
-        window.turnstile.render(widget, {
-          sitekey: turnstileSiteKey,
-          theme: 'light',
-          callback: async (token) => {
-            try {
-              await backend.ensureSession(token)
-              restoreDialog()
-              resolve()
-            } catch (error) {
-              document.querySelector('#authError').textContent = humanizeError(error)
-              window.turnstile.reset()
-            }
-          },
-          'error-callback': () => {
-            document.querySelector('#authError').textContent =
-              '验证加载失败，请切换网络后点击刷新重试'
-          },
+    const retryButton = document.querySelector('#authRetry')
+    const startChallenge = () => {
+      const widget = document.querySelector('#turnstileWidget')
+      const errorNode = document.querySelector('#authError')
+      widget.innerHTML = '<span class="auth-loading">正在连接验证服务…</span>'
+      errorNode.textContent = ''
+      retryButton.hidden = true
+
+      runTurnstileChallenge(widget, (id) => {
+        widgetId = id
+      })
+        .then(async (token) => {
+          if (settled) return
+          try {
+            await backend.ensureSession(token)
+            settled = true
+            restoreDialog()
+            resolve()
+          } catch (error) {
+            errorNode.textContent = humanizeError(error)
+            retryButton.hidden = false
+          }
         })
-      })
-      .catch((error) => {
-        document.querySelector('#turnstileWidget').innerHTML = ''
-        document.querySelector('#authError').textContent = error.message
-      })
+        .catch((error) => {
+          if (settled) return
+          widget.innerHTML = ''
+          errorNode.textContent = humanizeError(error)
+          retryButton.hidden = false
+        })
+    }
+
+    retryButton.addEventListener('click', () => {
+      if (widgetId !== null && window.turnstile) {
+        window.turnstile.remove(widgetId)
+        widgetId = null
+      }
+      turnstileLoadPromise = null
+      document.querySelector('#turnstileScript')?.remove()
+      startChallenge()
+    })
+
+    startChallenge()
+  })
+}
+
+async function runTurnstileChallenge(container, onRender = () => {}) {
+  await loadTurnstile()
+  container.innerHTML = ''
+
+  return new Promise((resolve, reject) => {
+    let finished = false
+    const timeoutId = window.setTimeout(() => {
+      if (finished) return
+      finished = true
+      reject(new Error('验证超过8秒仍未完成，请点“重新验证”；微信内请改用系统浏览器'))
+    }, TURNSTILE_TIMEOUT_MS)
+
+    const finish = (handler, value) => {
+      if (finished) return
+      finished = true
+      window.clearTimeout(timeoutId)
+      handler(value)
+    }
+
+    const widgetId = window.turnstile.render(container, {
+      sitekey: turnstileSiteKey,
+      theme: 'light',
+      size: 'flexible',
+      language: 'zh-CN',
+      appearance: 'interaction-only',
+      retry: 'auto',
+      'retry-interval': 2_000,
+      'refresh-expired': 'auto',
+      'refresh-timeout': 'auto',
+      callback: (token) => finish(resolve, token),
+      'error-callback': () =>
+        finish(reject, new Error('验证服务连接失败，请重新验证或更换浏览器')),
+      'timeout-callback': () =>
+        finish(reject, new Error('验证超时，请重新验证或更换浏览器')),
+      'unsupported-callback': () =>
+        finish(reject, new Error('当前浏览器不支持人机验证，请在系统浏览器中打开')),
+    })
+
+    onRender(widgetId)
   })
 }
 
 function loadTurnstile() {
   if (window.turnstile) return Promise.resolve(window.turnstile)
+  if (turnstileLoadPromise) return turnstileLoadPromise
 
-  return new Promise((resolve, reject) => {
+  turnstileLoadPromise = new Promise((resolve, reject) => {
     document.querySelector('#turnstileScript')?.remove()
 
     const script = document.createElement('script')
     const timeoutId = window.setTimeout(() => {
       script.remove()
-      reject(new Error('验证组件加载超时，请切换网络后刷新重试'))
-    }, 12_000)
+      turnstileLoadPromise = null
+      reject(new Error('验证组件加载超时，请重新验证或改用系统浏览器'))
+    }, TURNSTILE_TIMEOUT_MS)
 
     script.id = 'turnstileScript'
     script.src = TURNSTILE_SCRIPT_URL
@@ -822,14 +988,24 @@ function loadTurnstile() {
     script.onload = () => {
       window.clearTimeout(timeoutId)
       if (window.turnstile) resolve(window.turnstile)
-      else reject(new Error('验证组件没有正确启动，请刷新重试'))
+      else {
+        turnstileLoadPromise = null
+        reject(new Error('验证组件没有正确启动，请重新验证或改用系统浏览器'))
+      }
     }
     script.onerror = () => {
       window.clearTimeout(timeoutId)
-      reject(new Error('验证组件加载失败，请切换网络后刷新重试'))
+      turnstileLoadPromise = null
+      reject(new Error('验证组件加载失败，请重新验证或改用系统浏览器'))
     }
     document.head.append(script)
   })
+
+  return turnstileLoadPromise
+}
+
+function isEmbeddedBrowser() {
+  return /MicroMessenger|QQ\/|QQBrowser|Weibo/i.test(navigator.userAgent)
 }
 
 function showFatalError(error) {
