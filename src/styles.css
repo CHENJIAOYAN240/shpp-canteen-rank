@@ -970,6 +970,11 @@ footer p {
   background: #f2faed;
 }
 
+.auth-precheck[data-status="slow"] {
+  border-color: #d7aa2c;
+  background: #fff7d8;
+}
+
 .auth-precheck[data-status="error"] {
   border-color: #d9826e;
 }

@@ -26,7 +26,8 @@ const backend = createBackend()
 const app = document.querySelector('#app')
 const TURNSTILE_SCRIPT_URL =
   'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-const TURNSTILE_TIMEOUT_MS = 8_000
+const TURNSTILE_SLOW_MS = 8_000
+const TURNSTILE_SCRIPT_TIMEOUT_MS = 20_000
 let turnstileLoadPromise = null
 
 const state = {
@@ -40,6 +41,7 @@ const state = {
   imagePreparationError: null,
   imagePreparationId: 0,
   authPreparation: null,
+  authPreparationId: 0,
   authWidgetId: null,
 }
 
@@ -773,6 +775,7 @@ function withCaptchaRetry(operation, onCaptcha = () => {}) {
 function prepareAuthSession({ force = false } = {}) {
   if (backend.isDemo || !turnstileSiteKey) return Promise.resolve()
   if (state.authPreparation && !force) return state.authPreparation
+  const preparationId = ++state.authPreparationId
 
   if (force && state.authWidgetId !== null && window.turnstile) {
     window.turnstile.remove(state.authWidgetId)
@@ -806,11 +809,23 @@ function prepareAuthSession({ force = false } = {}) {
     .ensureSession()
     .catch((error) => {
       if (!(error instanceof CaptchaRequiredError)) throw error
-      return runTurnstileChallenge(widget, (widgetId) => {
-        state.authWidgetId = widgetId
-      })
+      return runTurnstileChallenge(
+        widget,
+        (widgetId) => {
+          state.authWidgetId = widgetId
+        },
+        () => {
+          if (preparationId !== state.authPreparationId) return
+          panel.dataset.status = 'slow'
+          title.textContent = '验证速度有点慢'
+          status.textContent = '仍在后台继续验证，你可以先填写其他内容。'
+          errorNode.textContent = ''
+          retryButton.hidden = false
+        },
+      )
     })
     .then(() => {
+      if (preparationId !== state.authPreparationId) return
       if (state.authWidgetId !== null && window.turnstile) {
         window.turnstile.remove(state.authWidgetId)
         state.authWidgetId = null
@@ -822,6 +837,7 @@ function prepareAuthSession({ force = false } = {}) {
       retryButton.hidden = true
     })
     .catch((error) => {
+      if (preparationId !== state.authPreparationId) return
       panel.dataset.status = 'error'
       title.textContent = '验证没有完成'
       status.textContent = '请重新验证；内置浏览器卡住时请改用系统浏览器。'
@@ -864,6 +880,7 @@ function showCaptchaGate() {
   return new Promise((resolve, reject) => {
     let widgetId = null
     let settled = false
+    let challengeAttempt = 0
 
     const restoreDialog = () => {
       if (widgetId !== null && window.turnstile) window.turnstile.remove(widgetId)
@@ -882,17 +899,27 @@ function showCaptchaGate() {
 
     const retryButton = document.querySelector('#authRetry')
     const startChallenge = () => {
+      const attempt = ++challengeAttempt
       const widget = document.querySelector('#turnstileWidget')
       const errorNode = document.querySelector('#authError')
       widget.innerHTML = '<span class="auth-loading">正在连接验证服务…</span>'
       errorNode.textContent = ''
       retryButton.hidden = true
 
-      runTurnstileChallenge(widget, (id) => {
-        widgetId = id
-      })
+      runTurnstileChallenge(
+        widget,
+        (id) => {
+          widgetId = id
+        },
+        () => {
+          if (settled || attempt !== challengeAttempt) return
+          errorNode.textContent =
+            '验证仍在后台进行。如果一直不动，可以点“重新验证”或改用系统浏览器。'
+          retryButton.hidden = false
+        },
+      )
         .then(async (token) => {
-          if (settled) return
+          if (settled || attempt !== challengeAttempt) return
           try {
             await backend.ensureSession(token)
             settled = true
@@ -904,7 +931,7 @@ function showCaptchaGate() {
           }
         })
         .catch((error) => {
-          if (settled) return
+          if (settled || attempt !== challengeAttempt) return
           widget.innerHTML = ''
           errorNode.textContent = humanizeError(error)
           retryButton.hidden = false
@@ -925,22 +952,25 @@ function showCaptchaGate() {
   })
 }
 
-async function runTurnstileChallenge(container, onRender = () => {}) {
+async function runTurnstileChallenge(
+  container,
+  onRender = () => {},
+  onSlow = () => {},
+) {
   await loadTurnstile()
   container.innerHTML = ''
 
   return new Promise((resolve, reject) => {
     let finished = false
-    const timeoutId = window.setTimeout(() => {
+    const slowTimerId = window.setTimeout(() => {
       if (finished) return
-      finished = true
-      reject(new Error('验证超过8秒仍未完成，请点“重新验证”；微信内请改用系统浏览器'))
-    }, TURNSTILE_TIMEOUT_MS)
+      onSlow()
+    }, TURNSTILE_SLOW_MS)
 
     const finish = (handler, value) => {
       if (finished) return
       finished = true
-      window.clearTimeout(timeoutId)
+      window.clearTimeout(slowTimerId)
       handler(value)
     }
 
@@ -979,7 +1009,7 @@ function loadTurnstile() {
       script.remove()
       turnstileLoadPromise = null
       reject(new Error('验证组件加载超时，请重新验证或改用系统浏览器'))
-    }, TURNSTILE_TIMEOUT_MS)
+    }, TURNSTILE_SCRIPT_TIMEOUT_MS)
 
     script.id = 'turnstileScript'
     script.src = TURNSTILE_SCRIPT_URL
